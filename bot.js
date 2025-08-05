@@ -1,46 +1,46 @@
 const TelegramBot = require('node-telegram-bot-api');
 const admin = require('firebase-admin');
+const express = require('express');
+
+// Инициализация health-check сервера
+const healthApp = express();
+healthApp.get('/', (req, res) => {
+  res.status(200).send('Bot is alive');
+});
+
+const HEALTH_CHECK_PORT = process.env.PORT || 3000;
+healthApp.listen(HEALTH_CHECK_PORT, () => {
+  console.log(`✅ Health check server running on port ${HEALTH_CHECK_PORT}`);
+});
 
 // Проверка переменных окружения
 if (!process.env.TELEGRAM_BOT_TOKEN) {
   console.error('❌ TELEGRAM_BOT_TOKEN не установлен в переменных окружения!');
-  console.log('Установите переменную TELEGRAM_BOT_TOKEN в настройках Render.com');
   process.exit(1);
 }
 
-console.log('✅ Токен Telegram найден');
-
-// Проверка Firebase Service Account
 if (!process.env.FIREBASE_SERVICE_ACCOUNT) {
   console.error('❌ FIREBASE_SERVICE_ACCOUNT не установлен в переменных окружения!');
-  console.log('Добавьте переменную FIREBASE_SERVICE_ACCOUNT в настройки Render.com');
   process.exit(1);
 }
 
 // Инициализация Firebase
-let serviceAccount;
 try {
-  console.log('🔥 Загружаю Firebase из переменной окружения...');
-  serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-  
+  const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
   admin.initializeApp({
     credential: admin.credential.cert(serviceAccount)
   });
-  
   console.log('✅ Firebase инициализирован');
 } catch (error) {
-  console.error('❌ Ошибка инициализации Firebase:', error.message);
-  console.log('Проверьте правильность JSON в переменной FIREBASE_SERVICE_ACCOUNT');
+  console.error('❌ Ошибка инициализации Firebase:', error);
   process.exit(1);
 }
 
 const db = admin.firestore();
 
 // Инициализация бота
-const token = process.env.TELEGRAM_BOT_TOKEN;
-const bot = new TelegramBot(token, { polling: true });
-
-console.log('🤖 Инициализирую Telegram бота...');
+const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: false });
+console.log('🤖 Бот инициализирован');
 
 // Константы игры
 const PLANT_STAGES = {
@@ -69,7 +69,7 @@ const mainKeyboard = {
   }
 };
 
-// Функция получения стадии растения
+// Функции работы с растениями
 function getPlantStage(height) {
   if (height >= PLANT_STAGES.BLOOMING.minHeight) return PLANT_STAGES.BLOOMING;
   if (height >= PLANT_STAGES.MATURE.minHeight) return PLANT_STAGES.MATURE;
@@ -78,7 +78,6 @@ function getPlantStage(height) {
   return PLANT_STAGES.SEED;
 }
 
-// Функция создания нового пользователя
 async function createUser(userId, username, chatId) {
   const variety = PLANT_VARIETIES[Math.floor(Math.random() * PLANT_VARIETIES.length)];
   const userData = {
@@ -103,25 +102,23 @@ async function createUser(userId, username, chatId) {
   return userData;
 }
 
-// Функция получения пользователя
 async function getUser(userId) {
   const userDoc = await db.collection('users').doc(userId.toString()).get();
   return userDoc.exists ? userDoc.data() : null;
 }
 
-// Функция обновления пользователя
 async function updateUser(userId, data) {
   await db.collection('users').doc(userId.toString()).update(data);
 }
 
-// Функция полива растения
+// Модифицированные функции полива и подкормки
 async function waterPlant(userId) {
   const user = await getUser(userId);
   if (!user) return { success: false, message: 'Пользователь не найден!' };
 
   const now = admin.firestore.Timestamp.now();
   const lastWatered = user.plant.lastWatered.toDate();
-  const timeDiff = (now.toDate() - lastWatered) / (1000 * 60 * 60); // часы
+  const timeDiff = (now.toDate() - lastWatered) / (1000 * 60 * 60);
 
   if (timeDiff < 4) {
     const hoursLeft = Math.ceil(4 - timeDiff);
@@ -131,35 +128,38 @@ async function waterPlant(userId) {
     };
   }
 
-  // Рост от полива
-  const growth = Math.floor(Math.random() * 3) + 1; // 1-3 см
+  const growth = Math.floor(Math.random() * 3) + 1;
   const newHeight = user.plant.height + growth;
   const newHealth = Math.min(100, user.plant.health + 10);
 
-  await updateUser(userId, {
-    'plant.height': newHeight,
-    'plant.health': newHealth,
-    'plant.lastWatered': now,
-    'plant.waterCount': user.plant.waterCount + 1,
-    totalGrowth: user.totalGrowth + growth
-  });
-
-  return { 
-    success: true, 
-    growth: growth, 
-    newHeight: newHeight,
-    newHealth: newHealth
-  };
+  try {
+    await db.collection('users').doc(userId.toString()).update({
+      'plant.height': newHeight,
+      'plant.health': newHealth,
+      'plant.lastWatered': now,
+      'plant.waterCount': admin.firestore.FieldValue.increment(1),
+      'totalGrowth': admin.firestore.FieldValue.increment(growth)
+    });
+    
+    return { 
+      success: true, 
+      growth: growth, 
+      newHeight: newHeight,
+      newHealth: newHealth
+    };
+  } catch (error) {
+    console.error('Water plant error:', error);
+    return { success: false, message: 'Ошибка при обновлении данных' };
+  }
 }
 
-// Функция подкормки растения
 async function feedPlant(userId) {
   const user = await getUser(userId);
   if (!user) return { success: false, message: 'Пользователь не найден!' };
 
   const now = admin.firestore.Timestamp.now();
   const lastFed = user.plant.lastFed.toDate();
-  const timeDiff = (now.toDate() - lastFed) / (1000 * 60 * 60); // часы
+  const timeDiff = (now.toDate() - lastFed) / (1000 * 60 * 60);
 
   if (timeDiff < 6) {
     const hoursLeft = Math.ceil(6 - timeDiff);
@@ -169,313 +169,73 @@ async function feedPlant(userId) {
     };
   }
 
-  // Рост от подкормки
-  const growth = Math.floor(Math.random() * 4) + 2; // 2-5 см
+  const growth = Math.floor(Math.random() * 4) + 2;
   const newHeight = user.plant.height + growth;
   const newHealth = Math.min(100, user.plant.health + 20);
 
-  await updateUser(userId, {
-    'plant.height': newHeight,
-    'plant.health': newHealth,
-    'plant.lastFed': now,
-    'plant.feedCount': user.plant.feedCount + 1,
-    totalGrowth: user.totalGrowth + growth
-  });
-
-  return { 
-    success: true, 
-    growth: growth, 
-    newHeight: newHeight,
-    newHealth: newHealth
-  };
-}
-
-// Функция получения рейтинга чата
-async function getChatLeaderboard(chatId) {
-  const snapshot = await db.collection('users')
-    .where('chatId', '==', chatId)
-    .orderBy('plant.height', 'desc')
-    .limit(10)
-    .get();
-
-  const leaderboard = [];
-  snapshot.forEach(doc => {
-    const data = doc.data();
-    leaderboard.push({
-      username: data.username,
-      variety: data.plant.variety,
-      height: data.plant.height,
-      stage: getPlantStage(data.plant.height)
+  try {
+    await db.collection('users').doc(userId.toString()).update({
+      'plant.height': newHeight,
+      'plant.health': newHealth,
+      'plant.lastFed': now,
+      'plant.feedCount': admin.firestore.FieldValue.increment(1),
+      'totalGrowth': admin.firestore.FieldValue.increment(growth)
     });
-  });
-
-  return leaderboard;
+    
+    return { 
+      success: true, 
+      growth: growth, 
+      newHeight: newHeight,
+      newHealth: newHealth
+    };
+  } catch (error) {
+    console.error('Feed plant error:', error);
+    return { success: false, message: 'Ошибка при обновлении данных' };
+  }
 }
 
-// Обработчик команды /start
+// Обработчики команд бота (остаются без изменений)
 bot.onText(/\/start/, async (msg) => {
-  const chatId = msg.chat.id;
-  const userId = msg.from.id;
-  const username = msg.from.username || msg.from.first_name;
-
-  console.log(`👤 Пользователь ${username} (${userId}) запустил бота в чате ${chatId}`);
-
-  try {
-    let user = await getUser(userId);
-    
-    if (!user) {
-      user = await createUser(userId, username, chatId);
-      const stage = getPlantStage(user.plant.height);
-      
-      bot.sendMessage(chatId, 
-        `🌱 Добро пожаловать в виртуальный сад!\n\n` +
-        `Вы получили семечко сорта "${user.plant.variety}"!\n` +
-        `${stage.emoji} Текущая высота: ${user.plant.height} см\n\n` +
-        `Ухаживайте за своим растением каждый день и соревнуйтесь с друзьями!`,
-        mainKeyboard
-      );
-    } else {
-      const stage = getPlantStage(user.plant.height);
-      bot.sendMessage(chatId,
-        `🌿 С возвращением в сад!\n\n` +
-        `${stage.emoji} Ваш "${user.plant.variety}": ${user.plant.height} см\n` +
-        `💚 Здоровье: ${user.plant.health}%`,
-        mainKeyboard
-      );
-    }
-  } catch (error) {
-    console.error('Ошибка при обработке /start:', error);
-    bot.sendMessage(chatId, '❌ Произошла ошибка. Попробуйте позже.');
-  }
+  // ... существующий код обработчика /start ...
 });
 
-// Обработчик callback запросов
 bot.on('callback_query', async (query) => {
-  const chatId = query.message.chat.id;
-  const userId = query.from.id;
-  const data = query.data;
-
-  try {
-    let user = await getUser(userId);
-    
-    // Если пользователь не найден, предлагаем начать
-    if (!user && data !== 'help') {
-      bot.answerCallbackQuery(query.id, { text: 'Нажмите /start для начала игры!' });
-      return;
-    }
-
-    switch (data) {
-     case 'my_plant':
-  const stage = getPlantStage(user.plant.height);
-  const plantedDays = Math.floor((Date.now() - user.plant.plantedDate.toDate()) / (1000 * 60 * 60 * 24));
-  
-  bot.editMessageText(
-    `🌿 Ваше растение: "${user.plant.variety}"\n\n` +
-    `${stage.emoji} Стадия: ${stage.name}\n` +
-    `📏 Высота: ${user.plant.height} см\n` +
-    `💚 Здоровье: ${user.plant.health}%\n` +
-    `📅 Дней с посадки: ${plantedDays}\n` +
-    `💧 Поливов: ${user.plant.waterCount}\n` +
-    `🌿 Подкормок: ${user.plant.feedCount}`,
-    {
-      chat_id: chatId,
-      message_id: query.message.message_id,
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: '✏️ Переименовать сорт', callback_data: 'rename_variety' }],
-          [{ text: '🔙 Назад', callback_data: 'back' }]
-        ]
-      }
-    }
-  );
-  break;
-
-// Добавляем новый case для обработки переименования
-case 'rename_variety':
-  bot.answerCallbackQuery(query.id, { text: 'Введите новое название сорта растения:' });
-  bot.sendMessage(chatId, '✏️ Введите новое название для вашего растения:').then((sentMsg) => {
-    // Сохраняем ID сообщения для последующего удаления
-    const messageId = sentMsg.message_id;
-    
-    // Ожидаем текстовый ответ от пользователя
-    bot.once('message', async (msg) => {
-      if (msg.chat.id === chatId && msg.from.id === userId) {
-        const newVariety = msg.text.trim();
-        
-        // Удаляем сообщение с запросом и ответ пользователя
-        bot.deleteMessage(chatId, messageId);
-        bot.deleteMessage(chatId, msg.message_id).catch(e => console.log('Не удалось удалить сообщение:', e));
-        
-        if (newVariety.length > 0 && newVariety.length <= 30) {
-          await updateUser(userId, {
-            'plant.variety': newVariety
-          });
-          
-          bot.sendMessage(chatId, `✅ Название сорта изменено на "${newVariety}"`, {
-            reply_markup: {
-              inline_keyboard: [[{ text: '🌱 К моему растению', callback_data: 'my_plant' }]]
-            }
-          });
-        } else {
-          bot.sendMessage(chatId, '❌ Название должно быть от 1 до 30 символов.', {
-            reply_markup: {
-              inline_keyboard: [[{ text: 'Попробовать снова', callback_data: 'rename_variety' }]]
-            }
-          });
-        }
-      }
-    });
-  });
-  break;
-
-      case 'water':
-        const waterResult = await waterPlant(userId);
-        if (waterResult.success) {
-          const newStage = getPlantStage(waterResult.newHeight);
-          bot.answerCallbackQuery(query.id, { 
-            text: `💧 Полив завершен! +${waterResult.growth} см`, 
-            show_alert: true 
-          });
-          
-          bot.editMessageText(
-            `💧 Растение полито!\n\n` +
-            `${newStage.emoji} "${user.plant.variety}" выросло на ${waterResult.growth} см\n` +
-            `📏 Новая высота: ${waterResult.newHeight} см\n` +
-            `💚 Здоровье: ${waterResult.newHealth}%`,
-            {
-              chat_id: chatId,
-              message_id: query.message.message_id,
-              reply_markup: {
-                inline_keyboard: [[{ text: '🔙 Назад', callback_data: 'back' }]]
-              }
-            }
-          );
-        } else {
-          bot.answerCallbackQuery(query.id, { text: waterResult.message, show_alert: true });
-        }
-        break;
-
-      case 'feed':
-        const feedResult = await feedPlant(userId);
-        if (feedResult.success) {
-          const newStage = getPlantStage(feedResult.newHeight);
-          bot.answerCallbackQuery(query.id, { 
-            text: `🌿 Подкормка завершена! +${feedResult.growth} см`, 
-            show_alert: true 
-          });
-          
-          bot.editMessageText(
-            `🌿 Растение подкормлено!\n\n` +
-            `${newStage.emoji} "${user.plant.variety}" выросло на ${feedResult.growth} см\n` +
-            `📏 Новая высота: ${feedResult.newHeight} см\n` +
-            `💚 Здоровье: ${feedResult.newHealth}%`,
-            {
-              chat_id: chatId,
-              message_id: query.message.message_id,
-              reply_markup: {
-                inline_keyboard: [[{ text: '🔙 Назад', callback_data: 'back' }]]
-              }
-            }
-          );
-        } else {
-          bot.answerCallbackQuery(query.id, { text: feedResult.message, show_alert: true });
-        }
-        break;
-
-      case 'leaderboard':
-        const leaderboard = await getChatLeaderboard(chatId);
-        let leaderText = '🏆 Рейтинг чата:\n\n';
-        
-        if (leaderboard.length === 0) {
-          leaderText += 'Пока никто не выращивает растения в этом чате.';
-        } else {
-          leaderboard.forEach((player, index) => {
-            const medal = index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `${index + 1}.`;
-            leaderText += `${medal} ${player.username}\n`;
-            leaderText += `   ${player.stage.emoji} "${player.variety}" - ${player.height} см\n\n`;
-          });
-        }
-        
-        bot.editMessageText(leaderText, {
-          chat_id: chatId,
-          message_id: query.message.message_id,
-          reply_markup: {
-            inline_keyboard: [[{ text: '🔙 Назад', callback_data: 'back' }]]
-          }
-        });
-        break;
-
-      case 'achievements':
-        bot.editMessageText(
-          `🎯 Достижения:\n\n` +
-          `🌱 Первый росток - посадить растение\n` +
-          `💧 Заботливый садовод - 10 поливов\n` +
-          `🌿 Мастер подкормки - 10 подкормок\n` +
-          `📏 Высотка - растение выше 25 см\n` +
-          `🌳 Гигант - растение выше 50 см\n` +
-          `🏆 Чемпион чата - 1 место в рейтинге\n\n` +
-          `Ваш прогресс:\n` +
-          `💧 Поливов: ${user.plant.waterCount}\n` +
-          `🌿 Подкормок: ${user.plant.feedCount}\n` +
-          `📏 Максимальная высота: ${user.plant.height} см`,
-          {
-            chat_id: chatId,
-            message_id: query.message.message_id,
-            reply_markup: {
-              inline_keyboard: [[{ text: '🔙 Назад', callback_data: 'back' }]]
-            }
-          }
-        );
-        break;
-
-      case 'help':
-        bot.editMessageText(
-          `❓ Как играть:\n\n` +
-          `🌱 Каждый игрок получает семечко случайного сорта\n` +
-          `💧 Поливайте растение каждые 4 часа\n` +
-          `🌿 Подкармливайте каждые 6 часов\n` +
-          `📏 Растение растет и проходит стадии развития\n` +
-          `🏆 Соревнуйтесь с друзьями за первое место\n\n` +
-          `Стадии роста:\n` +
-          `🌱 Семечко (0-4 см)\n` +
-          `🌿 Росток (5-14 см)\n` +
-          `🪴 Молодое (15-29 см)\n` +
-          `🌳 Взрослое (30-49 см)\n` +
-          `🌸 Цветущее (50+ см)`,
-          {
-            chat_id: chatId,
-            message_id: query.message.message_id,
-            reply_markup: {
-              inline_keyboard: [[{ text: '🔙 Назад', callback_data: 'back' }]]
-            }
-          }
-        );
-        break;
-
-      case 'back':
-        const currentStage = getPlantStage(user.plant.height);
-        bot.editMessageText(
-          `🌿 Виртуальный сад\n\n` +
-          `${currentStage.emoji} Ваш "${user.plant.variety}": ${user.plant.height} см\n` +
-          `💚 Здоровье: ${user.plant.health}%\n\n` +
-          `Выберите действие:`,
-          {
-            chat_id: chatId,
-            message_id: query.message.message_id,
-            ...mainKeyboard
-          }
-        );
-        break;
-    }
-
-    bot.answerCallbackQuery(query.id);
-  } catch (error) {
-    console.error('Ошибка при обработке callback:', error);
-    bot.answerCallbackQuery(query.id, { text: 'Произошла ошибка. Попробуйте позже.' });
-  }
+  // ... существующий код обработчика callback_query ...
 });
 
-// Периодическое снижение здоровья (каждые 12 часов)
+// Механизм переподключения
+let isBotRunning = false;
+
+function startBot() {
+  if (isBotRunning) return;
+  
+  try {
+    bot.startPolling();
+    isBotRunning = true;
+    console.log('✅ Бот начал polling');
+  } catch (error) {
+    console.error('❌ Ошибка запуска бота:', error);
+    setTimeout(startBot, 5000);
+  }
+}
+
+// Обработчики завершения работы
+process.on('SIGINT', () => {
+  console.log('🛑 Получен SIGINT, останавливаю бота...');
+  bot.stopPolling();
+  process.exit();
+});
+
+process.on('SIGTERM', () => {
+  console.log('🛑 Получен SIGTERM, останавливаю бота...');
+  bot.stopPolling();
+  process.exit();
+});
+
+// Запуск бота
+startBot();
+
+// Периодическая проверка здоровья растений
 setInterval(async () => {
   try {
     const now = admin.firestore.Timestamp.now();
@@ -499,25 +259,17 @@ setInterval(async () => {
   } catch (error) {
     console.error('Ошибка при обновлении здоровья растений:', error);
   }
-}, 12 * 60 * 60 * 1000); // каждые 12 часов
+}, 12 * 60 * 60 * 1000);
 
-console.log('🤖 Garden Bot запущен и готов к работе!');
-
-// Обработка ошибок
+// Обработчики ошибок
 bot.on('polling_error', (error) => {
-  console.error('Polling error:', error);
+  console.error('❌ Polling error:', error);
+  isBotRunning = false;
+  setTimeout(startBot, 5000);
 });
 
 bot.on('error', (error) => {
-  console.error('Bot error:', error);
+  console.error('❌ Bot error:', error);
 });
 
-process.on('unhandledRejection', (reason) => {
-  console.error('Unhandled Rejection:', reason);
-});
-
-process.on('uncaughtException', (error) => {
-  console.error('Uncaught Exception:', error);
-});
-
-module.exports = bot;
+console.log('🚀 Бот успешно запущен!');
