@@ -265,27 +265,68 @@ bot.on('callback_query', async (query) => {
     }
 
     switch (data) {
-      case 'my_plant':
-        const stage = getPlantStage(user.plant.height);
-        const plantedDays = Math.floor((Date.now() - user.plant.plantedDate.toDate()) / (1000 * 60 * 60 * 24));
+     case 'my_plant':
+  const stage = getPlantStage(user.plant.height);
+  const plantedDays = Math.floor((Date.now() - user.plant.plantedDate.toDate()) / (1000 * 60 * 60 * 24));
+  
+  bot.editMessageText(
+    `🌿 Ваше растение: "${user.plant.variety}"\n\n` +
+    `${stage.emoji} Стадия: ${stage.name}\n` +
+    `📏 Высота: ${user.plant.height} см\n` +
+    `💚 Здоровье: ${user.plant.health}%\n` +
+    `📅 Дней с посадки: ${plantedDays}\n` +
+    `💧 Поливов: ${user.plant.waterCount}\n` +
+    `🌿 Подкормок: ${user.plant.feedCount}`,
+    {
+      chat_id: chatId,
+      message_id: query.message.message_id,
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '✏️ Переименовать сорт', callback_data: 'rename_variety' }],
+          [{ text: '🔙 Назад', callback_data: 'back' }]
+        ]
+      }
+    }
+  );
+  break;
+
+// Добавляем новый case для обработки переименования
+case 'rename_variety':
+  bot.answerCallbackQuery(query.id, { text: 'Введите новое название сорта растения:' });
+  bot.sendMessage(chatId, '✏️ Введите новое название для вашего растения:').then((sentMsg) => {
+    // Сохраняем ID сообщения для последующего удаления
+    const messageId = sentMsg.message_id;
+    
+    // Ожидаем текстовый ответ от пользователя
+    bot.once('message', async (msg) => {
+      if (msg.chat.id === chatId && msg.from.id === userId) {
+        const newVariety = msg.text.trim();
         
-        bot.editMessageText(
-          `🌿 Ваше растение: "${user.plant.variety}"\n\n` +
-          `${stage.emoji} Стадия: ${stage.name}\n` +
-          `📏 Высота: ${user.plant.height} см\n` +
-          `💚 Здоровье: ${user.plant.health}%\n` +
-          `📅 Дней с посадки: ${plantedDays}\n` +
-          `💧 Поливов: ${user.plant.waterCount}\n` +
-          `🌿 Подкормок: ${user.plant.feedCount}`,
-          {
-            chat_id: chatId,
-            message_id: query.message.message_id,
+        // Удаляем сообщение с запросом и ответ пользователя
+        bot.deleteMessage(chatId, messageId);
+        bot.deleteMessage(chatId, msg.message_id).catch(e => console.log('Не удалось удалить сообщение:', e));
+        
+        if (newVariety.length > 0 && newVariety.length <= 30) {
+          await updateUser(userId, {
+            'plant.variety': newVariety
+          });
+          
+          bot.sendMessage(chatId, `✅ Название сорта изменено на "${newVariety}"`, {
             reply_markup: {
-              inline_keyboard: [[{ text: '🔙 Назад', callback_data: 'back' }]]
+              inline_keyboard: [[{ text: '🌱 К моему растению', callback_data: 'my_plant' }]]
             }
-          }
-        );
-        break;
+          });
+        } else {
+          bot.sendMessage(chatId, '❌ Название должно быть от 1 до 30 символов.', {
+            reply_markup: {
+              inline_keyboard: [[{ text: 'Попробовать снова', callback_data: 'rename_variety' }]]
+            }
+          });
+        }
+      }
+    });
+  });
+  break;
 
       case 'water':
         const waterResult = await waterPlant(userId);
