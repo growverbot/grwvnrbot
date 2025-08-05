@@ -1,4 +1,4 @@
-const TelegramBot = require('8327094310:AAHv5qAx4mUJkIuL6USLdJPkqMGhr1AoiXg');
+const TelegramBot = require('node-telegram-bot-api');
 const admin = require('firebase-admin');
 
 // Инициализация Firebase
