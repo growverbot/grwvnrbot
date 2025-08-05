@@ -33,16 +33,3 @@
     "start": "node bot.js"
   }
 } 
-{
-  "name": "garden-bot",
-  "version": "1.0.0",
-  "main": "bot.js",
-  "dependencies": {
-    "express": "^4.18.2",
-    "node-telegram-bot-api": "^0.61.0",
-    "firebase-admin": "^11.11.0"
-  },
-  "scripts": {
-    "start": "node bot.js"
-  }
-}
